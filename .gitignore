@@ -9,7 +9,6 @@
 # Go binaries and packages
 curltool
 **/bin
-**/pkg
 
 # Go workspace file
 go.work
