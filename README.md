@@ -25,8 +25,14 @@ The following commands demonstrate a two steps process of building the applicati
 1. Build container image
 
     ```shell
-    gcloud build submit --tag IMAGE_TAG
+    gcloud builds submit --tag IMAGE_TAG
     ```
+
+    NOTE: the `IMAGE_TAG` is expected to have the following format: `us-docker.pkg.dev/PROJECT_ID/IMAGE[:TAG]` where
+
+    * `PROJECT_ID` is the Google Cloud project ID where repository is located.
+    * `IMAGE` is the image name.
+    * `TAG` is the optional image tag
 
 1. Deploy to Cloud Run
 
