@@ -31,14 +31,14 @@ var (
 )
 
 type Agent struct {
-	VertexClient *genai.Client
-	Model        *genai.GenerativeModel
-	Sessions     map[string]*ChatSession
+	c        *genai.Client
+	m        *genai.GenerativeModel
+	sessions map[string]*ChatSession
 }
 
 type ChatSession struct {
-	ID      string
-	Session *genai.ChatSession
+	id   string
+	chat *genai.ChatSession
 }
 
 func NewAgent(ctx context.Context, e *echo.Echo) (*Agent, error) {
@@ -52,13 +52,13 @@ func NewAgent(ctx context.Context, e *echo.Echo) (*Agent, error) {
 	if region, err = utils.Region(ctx); err != nil {
 		return nil, fmt.Errorf("could not retrieve current region: %w", err)
 	}
-	agent := &Agent{Sessions: make(map[string]*ChatSession)}
-	if agent.VertexClient, err = genai.NewClient(ctx, projectID, region); err != nil {
+	agent := &Agent{sessions: make(map[string]*ChatSession)}
+	if agent.c, err = genai.NewClient(ctx, projectID, region); err != nil {
 		return nil, fmt.Errorf("could not initialize Vertex AI client: %w", err)
 	}
 	modelName := utils.GetenvWithDefault(modelNameEnvVar, defaultModelName)
-	agent.Model = agent.VertexClient.GenerativeModel(modelName)
-	agent.Model.SystemInstruction = &genai.Content{
+	agent.m = agent.c.GenerativeModel(modelName)
+	agent.m.SystemInstruction = &genai.Content{
 		Parts: []genai.Part{genai.Text(strings.Join(systemInstructions, " "))},
 	}
 	slog.Debug("initialized vertex ai", "project", projectID, "region", region, "model", modelName)
@@ -70,7 +70,7 @@ func NewAgent(ctx context.Context, e *echo.Echo) (*Agent, error) {
 }
 
 func (a *Agent) Close() {
-	if a.VertexClient != nil {
+	if a.c != nil {
 		a.Close()
 	}
 }
@@ -91,53 +91,58 @@ type AskResponse struct {
 }
 
 func (a *Agent) onAsk(ectx echo.Context) error {
-	input := &AskRequest{}
-	if err := ectx.Bind(&input); err != nil {
-		slog.Error("failed to parse input", "error", fmt.Sprintf("%v", err))
+	r := &AskRequest{}
+	if err := ectx.Bind(&r); err != nil {
+		slog.Error("failed to parse input", "error", fmt.Sprintf("%q", err))
 		return ectx.JSON(http.StatusBadRequest, ReturnStatus{Error: fmt.Sprintf("invalid input: %q", err)})
 	}
-	if input.Message == "" {
-		slog.Error("prompt is empty")
-		return ectx.JSON(http.StatusBadRequest, ReturnStatus{Error: "prompt is empty"})
+	if err := checkParams(r); err != nil {
+		slog.Error("invalid input", "error", fmt.Sprintf("%q", err))
+		return ectx.JSON(http.StatusBadRequest, ReturnStatus{Error: fmt.Sprintf("%q", err)})
 	}
-	prompt := input.Message
-	// TODO: augment message with additional bordering conditions
-	if input.SessionID == "" {
-		if ID, err := uuid.NewRandom(); err != nil {
-			slog.Error("failed to generate session ID", "error", fmt.Sprintf("%v", err))
-			return ectx.JSON(http.StatusInternalServerError, ReturnStatus{Error: fmt.Sprintf("failed to generate session ID: %q", err)})
-		} else {
-			input.SessionID = ID.String()
-		}
-		session := &ChatSession{ID: input.SessionID, Session: a.Model.StartChat()}
-		// TODO: check for already existing session
-		a.Sessions[input.SessionID] = session
-	}
-	s := a.Sessions[input.SessionID]
-	result, err := s.Session.SendMessage(ectx.Request().Context(), genai.Text(prompt))
+	s := a.getOrCreateSession(r.SessionID)
+	resp, err := s.chat.SendMessage(ectx.Request().Context(), genai.Text(r.Message))
 	if err != nil {
-		slog.Error("chat response error", "error", fmt.Sprintf("%v", err))
+		slog.Error("chat response error", "error", fmt.Sprintf("%q", err))
 		return ectx.JSON(http.StatusInternalServerError, ReturnStatus{Error: fmt.Sprintf("chat response error: %q", err)})
 	}
-	if len(result.Candidates) == 0 {
-		return ectx.JSON(http.StatusOK, ReturnStatus{Payload: AskResponse{SessionID: input.SessionID, Response: "<empty>"}})
+	if len(resp.Candidates) == 0 || resp.Candidates[0] == nil {
+		return ectx.JSON(http.StatusOK, ReturnStatus{Payload: AskResponse{SessionID: r.SessionID, Response: "<empty>"}})
 	}
-	response := composeResponse(result.Candidates[0])
-	slog.Debug("ask request processed", "session", input.SessionID, "prompt", prompt, "response", response)
-	return ectx.JSON(http.StatusOK, ReturnStatus{Payload: AskResponse{SessionID: input.SessionID, Response: response}})
+	msg := processContent(resp.Candidates[0].Content)
+	slog.Debug("ask request processed", "session", r.SessionID, "prompt", r.Message, "response", msg)
+	return ectx.JSON(http.StatusOK, ReturnStatus{Payload: AskResponse{SessionID: r.SessionID, Response: msg}})
 }
 
-func composeResponse(candidate *genai.Candidate) string {
-	totalParts := len(candidate.Content.Parts)
-	if totalParts == 0 {
-		return "<empty>"
+func checkParams(r *AskRequest) error {
+	if r.Message == "" {
+		return fmt.Errorf("request message is empty")
 	}
-	// convert []genai.Part to []string through []genai.Text
-	// TODO: skip genai.Part that aren't genai.Text
-	texts := make([]string, totalParts)
-	for i := range candidate.Content.Parts {
-		texts[i] = string(candidate.Content.Parts[i].(genai.Text))
+	if r.SessionID == "" {
+		uuid, err := uuid.NewRandom()
+		if err != nil {
+			return fmt.Errorf("cannot generate session ID: %w", err)
+		}
+		r.SessionID = uuid.String()
 	}
-	// concatenate as strings
-	return strings.Join(texts, ". ")
+	return nil
+}
+
+func (a *Agent) getOrCreateSession(sessionID string) *ChatSession {
+	s, ok := a.sessions[sessionID]
+	if !ok {
+		s = &ChatSession{id: sessionID, chat: a.m.StartChat()}
+		a.sessions[sessionID] = s
+	}
+	return s
+}
+
+func processContent(c *genai.Content) string {
+	text := make([]string, len(c.Parts))
+	for _, part := range c.Parts {
+		if t, ok := part.(genai.Text); !ok || len(string(t)) > 0 {
+			text = append(text, string(t))
+		}
+	}
+	return strings.Join(text, ". ")
 }

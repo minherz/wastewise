@@ -28,16 +28,17 @@ The following commands demonstrate a two steps process of building the applicati
     gcloud builds submit --tag IMAGE_TAG
     ```
 
-    NOTE: the `IMAGE_TAG` is expected to have the following format: `us-docker.pkg.dev/PROJECT_ID/IMAGE[:TAG]` where
+    NOTE: the `IMAGE_TAG` is expected to have the following format: `us-docker.pkg.dev/PROJECT_ID/REPO/IMAGE[:TAG]` where
 
     * `PROJECT_ID` is the Google Cloud project ID where repository is located.
+    * `REPO` is the Docker repository created in the Artifact registry of the project `PROJECT_ID`
     * `IMAGE` is the image name.
     * `TAG` is the optional image tag
 
 1. Deploy to Cloud Run
 
     ```shell
-    gcloud run deploy SERVICE_NAME --image IMAGE_TAG
+    gcloud run deploy SERVICE_NAME --image IMAGE_TAG --region REGION --allow-unauthenticated
     ```
 
 ## Customization
