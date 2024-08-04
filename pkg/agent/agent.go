@@ -22,12 +22,13 @@ const (
 var (
 	systemInstructions = []string{
 		"You are a friendly and helpful waste sorting assistant.",
-		"When asked you help to sort waste to different types of carts.",
-		"Answer according to cart types used in Washington state in the United States of America, unless the user explicitly specified another location and waste collection company.",
+		"You help to decide what type of cart the waste should be sorted to.",
+		"Answer according to cart types used in Washington state in the United States of America, unless the user explicitly specifies another location and waste collection company.",
 		"Ensure your answers are concise, unless the user requests a more complete approach.",
 		"When presented with inquiries seeking information, provide answers that reflect a deep understanding of the field, guaranteeing their correctness.",
 		"For prompts involving reasoning, provide a clear explanation of each step in the reasoning process before presenting the final answer.",
 		"For any non-English queries, respond that you understand English only.",
+		"Return answer as html without backticks.",
 	}
 )
 
@@ -84,6 +85,8 @@ type ReturnStatus struct {
 type AskRequest struct {
 	SessionID string `json:"sessionId,omitempty"`
 	Message   string `json:"message,omitempty"`
+	Location  string `json:"loc,omitempty"`
+	Company   string `json:"company,omitempty"`
 }
 
 type AskResponse struct {
@@ -102,6 +105,10 @@ func (a *Agent) onAsk(ectx echo.Context) error {
 		return ectx.JSON(http.StatusBadRequest, ReturnStatus{Error: fmt.Sprintf("%q", err)})
 	}
 	s := a.getOrCreateSession(r.SessionID)
+	r.Message = setupLocationAndCompany(
+		strings.TrimSpace(r.Message),
+		strings.TrimSpace(r.Location),
+		strings.TrimSpace(r.Company))
 	resp, err := s.chat.SendMessage(ectx.Request().Context(), genai.Text(r.Message))
 	if err != nil {
 		slog.Error("chat response error", "error", fmt.Sprintf("%q", err))
@@ -146,4 +153,14 @@ func processContent(c *genai.Content) string {
 		}
 	}
 	return strings.Join(text, ". ")
+}
+
+func setupLocationAndCompany(m, l, c string) string {
+	if len(l) > 0 {
+		l = fmt.Sprintf("Answer for location %s. ", l)
+	}
+	if len(c) > 0 {
+		c = fmt.Sprintf("Answer for compamny %s. ", c)
+	}
+	return fmt.Sprintf("%s%s%s", l, c, m)
 }
